@@ -1,0 +1,611 @@
+In this article, I’ll show you how to create a fully local chatbot using LangGraph, Adaptive RAG, and Llama 3. Whether you’re aiming to boost your business or just want a powerful personal assistant, this tutorial will get you there.
+
+Adaptive RAG is a fascinating technology that picks the best retrieval-augmented generation strategy based on the complexity of your queries. It’s like having a smart assistant that always knows the best way to find and present information.
+
+And then there’s Llama 3, the latest marvel from Meta. This model is designed to be the best open-source alternative out there, rivaling even the top closed-source models in terms of performance.
+
+In this article, we’ll dive into what makes Adaptive RAG so effective, explore how the adaptive retrieval-augmented generation process works, and see how Llama 3’s 7B and 70B models compare to other leading AI models in “instruct” mode. Let’s get started on building your next-gen chatbot!
+
+What is Adaptive RAG?
+Adaptive RAG is a cutting-edge framework that intelligently selects the best strategy to handle queries based on their complexity. Instead of using a one-size-fits-all approach, it customizes the retrieval process for each query, balancing speed and accuracy. This ensures that simple queries are processed quickly and efficiently, while more complex queries receive the detailed attention they need.
+
+How Does Adaptive RAG Work?
+The Adaptive RAG system starts with a classifier that categorizes queries by their complexity. This classifier is trained on datasets that mix predicted outcomes from various models and existing data biases. When a query comes in, the classifier determines its complexity and the system decides the best retrieval strategy: iterative retrieval, single-step retrieval, or using a language model without retrieval.
+
+This smart selection process means that complex queries get more resources and simpler queries are handled swiftly, enhancing both efficiency and accuracy. By adapting to the complexity of each query, Adaptive RAG delivers precise and quick responses, outperforming rigid, uniform systems.
+
+How Does Llama 3 Compare to Other Models in “Instruct” Mode?
+Llama 3, developed by Meta, is designed to be a top-tier open-source model, with significant improvements over its predecessor, Llama 2. Here are the key enhancements:
+
+Model Architecture: Llama 3 uses a straightforward decoder-only transformer architecture, featuring a tokenizer with a vast vocabulary of 128,000 tokens for more efficient language encoding.
+Pre-Training Data: Meta has vastly expanded the training dataset for Llama 3, using over 15 trillion tokens from public sources, including a substantial increase in code-related data.
+Scaling Up: Through optimal training strategies and detailed scaling laws, Meta has maximized the efficiency of Llama 3’s pre-training, significantly boosting its performance.
+Fine-Tuning Instructions: Llama 3 employs an innovative instruction-tuning approach that includes supervised fine-tuning (SFT), rejection sampling, and advanced policy optimization techniques like PPO and DPO. This enhances the model’s ability to generate high-quality responses, especially in chat and coding tasks.
+These enhancements make Llama 3’s 7B and 70B models stand out in “instruct” mode, offering a level of performance comparable to the best closed-source models available today.
+
+Let us begin:
+Before we dive into working with LangGraph, Adaptive RAG, and performing actions on our text data, we need to import several libraries and packages. Here’s a list of the libraries and their purposes:
+
+Langchain: Provides access to Langchain functionalities.
+LangChain_Community: Contains third-party integrations that implement the base interfaces defined in LangChain Core.
+Langchain_core: Compiles LCEL sequences into an optimized execution plan, with automatic parallelization, streaming, tracing, and async support.
+Chroma: Part of the Vector store used for storing text embeddings.
+LangGraph: An alpha-stage library for building stateful, multi-actor applications with LLMs.
+Streamlit: Transforms Python scripts into interactive web apps in minutes.
+gpt4all: An ecosystem to train and deploy powerful and customized large language models that run locally on consumer-grade CPUs.
+tavily-python: A search API optimized for LLMs and RAG.
+TextSplitter: Splits large documents into smaller, more manageable chunks.
+Ollama: Allows you to run open-source large language models, such as Llama 3, locally.
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import GPT4AllEmbeddings
+from langchain.prompts import PromptTemplate
+from langchain_community.chat_models import ChatOllama
+from langchain_core.output_parsers import JsonOutputParser
+from langchain.prompts import PromptTemplate
+from langchain_community.chat_models import ChatOllama
+from langchain_core.output_parsers import JsonOutputParser
+from langchain import hub
+from langchain_community.chat_models import ChatOllama
+from langchain_core.output_parsers import StrOutputParser
+from typing_extensions import TypedDict
+from typing import List
+from langchain.schema import Document
+from langgraph.graph import END, StateGraph
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain.schema import Document
+from langchain_community.document_loaders import PyPDFLoader
+import streamlit as st
+import os
+We start by setting up a variable named llm and assigning it the value 'llama3'. Then, we set an environment variable for the Tavily API with an API key. Streamlit’s st.title function sets the web page's title. We create a text input field where users can enter a question and a file uploader sidebar that accepts only PDF files. A button labeled 'Process' processes the uploaded PDF files.
+
+llm = "llama3"
+tavily_api_key = os.environ['TAVILY_API_KEY'] = 'API_KEY'
+st.title("Multi-PDF ChatBot using LLAMA3 MODELS & Adaptive RAG")
+user_input = st.text_input("Question:", placeholder="Ask about your PDF", key='input')
+
+with st.sidebar:
+    uploaded_files = st.file_uploader("Upload your file", type=['pdf'], accept_multiple_files=True)
+    process = st.button("Process")
+if process:
+    if not uploaded_files:
+        st.warning("Please upload at least one PDF file.")
+        st.stop()
+We set up a variable named temp_dir and assign it the path of a directory on the computer where temporary files will be stored. If the directory doesn't exist, we create it. Then, we process each uploaded file by saving it to disk and loading its content using PyPDFLoader.
+
+# Ensures the temp directory exists
+temp_dir = 'C:/temp/'
+if not os.path.exists(temp_dir):
+    os.makedirs(temp_dir)
+
+# Process each uploaded file
+for uploaded_file in uploaded_files:
+    temp_file_path = os.path.join(temp_dir, uploaded_file.name)
+    
+    # Save the file to disk
+    with open(temp_file_path, "wb") as file:
+        file.write(uploaded_file.getbuffer()) 
+    
+    # Load the PDF using PyPDFLoader
+    try:
+        loader = PyPDFLoader(temp_file_path)
+        data = loader.load() 
+        st.write(f"Data loaded for {uploaded_file.name}")
+    except Exception as e:
+        st.error(f"Failed to load {uploaded_file.name}: {str(e)}")
+We create a RecursiveCharacterTextSplitter instance, configuring it with a chunk_size of 250 and a chunk_overlap value of zero. We use the split_text method to split the text into chunks. These chunks are then stored in our Vector Database using GPT4AllEmbeddings.
+
+text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+    chunk_size=250, chunk_overlap=0
+)
+text_chunks = text_splitter.split_documents(data)
+
+# Add to vectorDB
+vectorstore = Chroma.from_documents(
+    documents=text_chunks,
+    collection_name="rag-chroma",
+    embedding=GPT4AllEmbeddings(),
+)
+retriever = vectorstore.as_retriever()
+llm = ChatOllama(model=local_llm, format="json", temperature=0)
+We use PromptTemplate to create a template for a string prompt that instructs an expert system on whether to direct a user's question to a vector store or a web search. We set up a pipeline that uses this prompt, processes it through the LLM, and defines a sample question about LLM agent memory.
+
+ prompt = PromptTemplate(
+        template="""You are an expert at routing a user question to a vectorstore or web search. \n
+        Use the vectorstore for questions on LLM  agents, prompt engineering, and adversarial attacks. \n
+        You do not need to be stringent with the keywords in the question related to these topics. \n
+        Otherwise, use web-search. Give a binary choice 'web_search' or 'vectorstore' based on the question. \n
+        Return the a JSON with a single key 'datasource' and no premable or explaination. \n
+        Question to route: {question}""",
+        input_variables=["question"],
+)
+
+question_router = prompt | llm | JsonOutputParser()
+question = "llm agent memory"
+docs = retriever.get_relevant_documents(question)
+doc_txt = docs[1].page_content
+question_router.invoke({"question": question})
+llm = ChatOllama(model=local_llm, format="json", temperature=0)
+We also use PromptTemplate for grading the relevance of a document to a user’s question, determining if the document contains keywords related to the question, and providing a binary score ('yes' or 'no') in a simple JSON format.
+
+# Example of using PromptTemplate for grading relevance
+grading_prompt = PromptTemplate(
+    template="""You are an expert at determining document relevance. \n
+    Given the question, evaluate if the document contains relevant keywords. \n
+    Return a JSON with a single key 'score' and value 'yes' or 'no'. \n
+    Question: {question} \n
+    Document: {document}""",
+    input_variables=["question", "document"],
+)
+
+# Sample question and document for evaluation
+question = "What are the capabilities of LLM's agent memory?"
+document = doc_txt
+
+# Create a grading pipeline
+grader = grading_prompt | llm | JsonOutputParser()
+grading_result = grader.invoke({"question": question, "document": document})
+We use the LangChain hub to pull the prompt then, we define a function named ‘format_docs’ that takes a list of document objects as input creates a pipeline called rag_chain, and sets the user’s question as “agent memory”.
+
+Finally, it prints the output generated by the chain. This output is expected to be the language model’s response to the input question, processed and formatted by the chain.
+
+### Generate
+prompt = hub.pull("rlm/rag-prompt")
+
+# LLM
+llm = ChatOllama(model=local_llm, temperature=0)
+
+# Post-processing
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+# Chain
+rag_chain = prompt | llm | StrOutputParser()
+
+# Run
+question = "agent memory"
+generation = rag_chain.invoke({"context": docs, "question": question})
+print(generation)
+We define a PromptTemplate to assist in grading whether a given set of facts substantiates an answer.
+
+This involves presenting a block of documents labeled as “facts,” followed by an “answer” that needs to be assessed against these facts.
+
+The grader is instructed to provide a simple ‘yes’ or ‘no’ score, indicating if the answer is supported by the facts. This decision should be returned as a JSON object with a single key ‘score’
+
+### Hallucination Grader 
+# LLM
+llm = ChatOllama(model=local_llm, format="json", temperature=0)
+
+# Prompt
+prompt = PromptTemplate(
+    template="""You are a grader assessing whether an answer is grounded in / supported by a set of facts. \n 
+    Here are the facts:
+    \n ------- \n
+    {documents} 
+    \n ------- \n
+    Here is the answer: {generation}
+    Give a binary score 'yes' or 'no' score to indicate whether the answer is grounded in / supported by a set of facts. \n
+    Provide the binary score as a JSON with a single key 'score' and no preamble or explanation.""",
+    input_variables=["generation", "documents"],
+)
+
+hallucination_grader = prompt | llm | JsonOutputParser()
+hallucination_grader.invoke({"documents": docs, "generation": generation})
+We also define a PromptTemplate for evaluating whether a given answer is useful in resolving a specific question. This template displays the answer and the related question separated by lines, guiding a grader to assess the relevance and utility of the answer.
+
+The grader’s task is to provide a simple ‘yes’ or ‘no’ verdict on the usefulness of the answer, which should be returned as a JSON object containing a single key ‘score’
+
+### Answer Grader 
+
+# LLM
+llm = ChatOllama(model=local_llm, format="json", temperature=0)
+
+# Prompt
+prompt = PromptTemplate(
+    template="""You are a grader assessing whether an answer is useful to resolve a question. \n 
+    Here is the answer:
+    \n ------- \n
+    {generation} 
+    \n ------- \n
+    Here is the question: {question}
+    Give a binary score 'yes' or 'no' to indicate whether the answer is useful to resolve a question. \n
+    Provide the binary score as a JSON with a single key 'score' and no preamble or explanation.""",
+    input_variables=["generation", "question"],
+)
+
+answer_grader = prompt | llm | JsonOutputParser()
+answer_grader.invoke({"question": question,"generation": generation})
+We also define a PromptTemplate for rewriting questions to improve their suitability for retrieval from a vector store.
+
+### Question Re-writer
+
+# LLM
+llm = ChatOllama(model=local_llm, temperature=0)
+
+# Prompt 
+re_write_prompt = PromptTemplate(
+    template="""You a question re-writer that converts an input question to a better version that is optimized \n 
+     for vectorstore retrieval. Look at the initial and formulate an improved question. \n
+     Here is the initial question: \n\n {question}. Improved question with no preamble: \n """,
+    input_variables=["generation", "question"],
+)
+
+question_rewriter = re_write_prompt | llm | StrOutputParser()
+question_rewriter.invoke({"question": question})
+we added the web search tool tavily to help extract relevant topic content
+
+web_search_tool = TavilySearchResults(k=3,tavily_api_key=tavily_api_key)
+we defined the state structure for our graph. In this example, our state includes the user’s question, the generation of the question, and a document.
+
+class GraphState(TypedDict):
+    """
+    Represents the state of our graph.
+
+    Attributes:
+        question: question
+        generation: LLM generation
+        documents: list of documents 
+    """
+    question : str
+    generation : str
+    documents : List[str]
+we create a function called retrieve takes the current state which includes the question, as input. it then uses a retriever to obtain relevant documents based on the provided question. the retrieved documents are added to the state along with the original question
+
+also, we create a function called generate to improve the question and generate an answer it employs a retrieval-augmented generation (RAG) model to generate the answer
+
+then we create a function called Grade documents to evaluates the relevance of the retrieved document to the original question. it iterates through each document, scoring its relevance using a retrieval grader. Documents that are deemed relevant are retained, while irrelevant ones are filtered out from the state
+
+Finally, we create a function called a transform_query to improve the original question for better retrieval it takes the original question and potentially the retrieved documents as input. using a question rewrite generates a better-phrased version of the original question.
+
+def retrieve(state):
+    """
+    Retrieve documents
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        state (dict): New key added to state, documents, that contains retrieved documents
+    """
+    print("---RETRIEVE---")
+    question = state["question"]
+
+    # Retrieval
+    documents = retriever.get_relevant_documents(question)
+    return {"documents": documents, "question": question}
+
+def generate(state):
+    """
+    Generate answer
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        state (dict): New key added to state, generation, that contains LLM generation
+    """
+    print("---GENERATE---")
+    question = state["question"]
+    documents = state["documents"]
+    
+    # RAG generation
+    generation = rag_chain.invoke({"context": documents, "question": question})
+    return {"documents": documents, "question": question, "generation": generation}
+
+def grade_documents(state):
+    """
+    Determines whether the retrieved documents are relevant to the question.
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        state (dict): Updates documents key with only filtered relevant documents
+    """
+
+    print("---CHECK DOCUMENT RELEVANCE TO QUESTION---")
+    question = state["question"]
+    documents = state["documents"]
+    
+    # Score each doc
+    filtered_docs = []
+    for d in documents:
+        score = retrieval_grader.invoke({"question": question, "document": d.page_content})
+        grade = score['score']
+        if grade == "yes":
+            print("---GRADE: DOCUMENT RELEVANT---")
+            filtered_docs.append(d)
+        else:
+            print("---GRADE: DOCUMENT NOT RELEVANT---")
+            continue
+    return {"documents": filtered_docs, "question": question}
+
+def transform_query(state):
+    """
+    Transform the query to produce a better question.
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        state (dict): Updates question key with a re-phrased question
+    """
+
+    print("---TRANSFORM QUERY---")
+    question = state["question"]
+    documents = state["documents"]
+
+    # Re-write question
+    better_question = question_rewriter.invoke({"question": question})
+    return {"documents": documents, "question": better_question}
+we have a web_search function based on the re-phrased question. it retrieves web results using a web search tool and formats them into a single document.
+
+also, we have route_question determines whether to route the question to the web search or the RAG based on the source of the question. it invokes a question router to determine the source of the question whether it originated from a web search or vector store. Depending on the source, it returns the corresponding node to call next.
+
+then we create a function called “decide_to_generate this function decides whether to generate an answer or to re-generate a question based on the relevance of filtered documents If all documents are deemed irrelevant, it decides to re-generate a new query. Otherwise, if relevant documents are present, it generates an answer.
+
+Finally, we have the grade_generate_v_documents_and_question function, this function assesses the quality of the generated answer by checking for hallucinations and whether it addresses the original question. it first checks if the generation is grounded in the provided documents. if grounded, it further evaluates if the generated answer addresses the original question based on assessments, it decides whether the generation is useful or not useful
+
+def web_search(state):
+    """
+    Web search based on the re-phrased question.
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        state (dict): Updates documents key with appended web results
+    """
+
+    print("---WEB SEARCH---")
+    question = state["question"]
+
+    # Web search
+    docs = web_search_tool.invoke({"query": question})
+    web_results = "\n".join([d["content"] for d in docs])
+    web_results = Document(page_content=web_results)
+
+    return {"documents": web_results, "question": question}
+
+### Edges ###
+
+def route_question(state):
+    """
+    Route question to web search or RAG.
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        str: Next node to call
+    """
+
+    print("---ROUTE QUESTION---")
+    question = state["question"]
+    print(question)
+    source = question_router.invoke({"question": question})  
+    print(source)
+    print(source['datasource'])
+    if source['datasource'] == 'web_search':
+        print("---ROUTE QUESTION TO WEB SEARCH---")
+        return "web_search"
+    elif source['datasource'] == 'vectorstore':
+        print("---ROUTE QUESTION TO RAG---")
+        return "vectorstore"
+
+def decide_to_generate(state):
+    """
+    Determines whether to generate an answer, or re-generate a question.
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        str: Binary decision for next node to call
+    """
+
+    print("---ASSESS GRADED DOCUMENTS---")
+    question = state["question"]
+    filtered_documents = state["documents"]
+
+    if not filtered_documents:
+        # All documents have been filtered check_relevance
+        # We will re-generate a new query
+        print("---DECISION: ALL DOCUMENTS ARE NOT RELEVANT TO QUESTION, TRANSFORM QUERY---")
+        return "transform_query"
+    else:
+        # We have relevant documents, so generate answer
+        print("---DECISION: GENERATE---")
+        return "generate"
+
+def grade_generation_v_documents_and_question(state):
+    """
+    Determines whether the generation is grounded in the document and answers question.
+
+    Args:
+        state (dict): The current graph state
+
+    Returns:
+        str: Decision for next node to call
+    """
+
+    print("---CHECK HALLUCINATIONS---")
+    question = state["question"]
+    documents = state["documents"]
+    generation = state["generation"]
+
+    score = hallucination_grader.invoke({"documents": documents, "generation": generation})
+    grade = score['score']
+
+    # Check hallucination
+    if grade == "yes":
+        print("---DECISION: GENERATION IS GROUNDED IN DOCUMENTS---")
+        # Check question-answering
+        print("---GRADE GENERATION vs QUESTION---")
+        score = answer_grader.invoke({"question": question,"generation": generation})
+        grade = score['score']
+        if grade == "yes":
+            print("---DECISION: GENERATION ADDRESSES QUESTION---")
+            return "useful"
+        else:
+            print("---DECISION: GENERATION DOES NOT ADDRESS QUESTION---")
+            return "not useful"
+    else:
+        pprint("---DECISION: GENERATION IS NOT GROUNDED IN DOCUMENTS, RE-TRY---")
+        return "not supported"
+We have defined all the nodes that we need. Now, we can define the workflow and add nodes to it. Now connect the respective nodes and set the entry point. This is the node from where the workflow starts.
+
+This Graph will include five nodes retriever, a Generator, a Document Grader, a Query Transformer, and a Web Search, and 1 Edge will be Decided to Generate.
+
+workflow = StateGraph(GraphState)
+
+# Define the nodes
+workflow.add_node("web_search", web_search) # web search
+workflow.add_node("retrieve", retrieve) # retrieve
+workflow.add_node("grade_documents", grade_documents) # grade documents
+workflow.add_node("generate", generate) # generate
+workflow.add_node("transform_query", transform_query) # transform_query
+
+# Build graph
+workflow.set_conditional_entry_point(
+    route_question,
+    {
+        "web_search": "web_search",
+        "vectorstore": "retrieve",
+    },
+)
+workflow.add_edge("web_search", "generate")
+workflow.add_edge("retrieve", "grade_documents")
+workflow.add_conditional_edges(
+    "grade_documents",
+    decide_to_generate,
+    {
+        "transform_query": "transform_query",
+        "generate": "generate",
+    },
+)
+workflow.add_edge("transform_query", "retrieve")
+workflow.add_conditional_edges(
+    "generate",
+    grade_generation_v_documents_and_question,
+    {
+        "not supported": "generate",
+        "useful": END,
+        "not useful": "transform_query",
+    },
+)
+
+# Compile
+app = workflow.compile()
+Now, let’s execute the process. First, let’s enter a question that will execute a pipeline that looks up vector data and answers the question.
+
+inputs = {"question": user_input}
+    for output in app.stream(inputs):
+        for key, value in output.items():
+            # Node
+            st.write(f"Node '{key}':")
+            # Optional: print full state at each node
+            # pprint.pprint(value["keys"], indent=2, width=80, depth=None)
+        print("\n---\n")
+
+    # Final generation
+    st.write(value["generation"])
+Here is an implementation of the Adaptive RAG sample using LLama3. This example demonstrates a basic application, with the potential for more complex iterations like query conversion based on the question. In real-world scenarios, considerations such as parameter adjustments and loop limits are essential. However, the approach of determining and executing a route based on a query enhances both quality and efficiency.
+
+If you enjoyed the article, consider giving it a clap 👏 and following for more updates! 🚀 here is the full code
+
+
+
+Langraph from LangChain
+In the rapidly evolving landscape of large language model (LLM) applications, a new frontier is emerging — the ability to create intelligent agents capable of iterative reasoning and dynamic decision-making. While frameworks like LangChain have made it easier than ever to build powerful LLM-driven applications, a critical piece was missing: an intuitive way to define and execute cyclical computational workflows.
+
+Enter LangGraph, a groundbreaking new module built on top of LangChain that unlocks the full potential of agent-based AI architectures. By introducing flexible graph-based computation models, LangGraph empowers developers to craft sophisticated agents that can engage in multi-step reasoning loops, seamlessly integrating LLMs into complex decision processes.
+
+These types of applications are often called agents. The simplest — but at the same time most ambitious — form of these is a loop that essentially has two steps:
+
+Call the LLM to determine either (a) what actions to take, or (b) what response to give the user
+Take given actions, and pass back to step 1
+These steps are repeated until a final response is generated. This is essentially the loop that powers our core AgentExecutor, and is the same logic that caused projects like AutoGPT to rise in prominence. This is simple because it is a relatively simple loop. It is the most ambitious because it offloads pretty much ALL of the decision making and reasoning ability to the LLM.
+
+StateGraph
+StateGraph is a class that represents the graph. You initialize this class by passing in a state definition. This state definition represents a central state object that is updated over time. This state is updated by nodes in the graph, which return operations to attributes of this state (in the form of a key-value store).
+
+The attributes of this state can be updated in two ways. First, an attribute could be overridden completely. This is useful if you want to nodes to return the new value of an attribute. Second, an attribute could be updated by adding to its value. This is useful if an attribute is a list of actions taken (or something similar) and you want nodes to return new actions taken (and have those automatically added to the attribute).
+
+We specify whether an attribute should be overridden or added to when creating the initial state definition. See an example in pseudocode below.
+
+from langgraph.graph import StateGraph
+from typing import TypedDict, List, Annotated
+import Operator
+
+
+class State(TypedDict):
+    input: str
+    all_actions: Annotated[List[str], operator.add]
+
+
+graph = StateGraph(State)
+Node
+After creating a StateGraph, you then add nodes with graph.add_node(name, value) syntax. The name parameter should be a string that we will use to refer to the node when adding edges. The value parameter should be either a function or LCEL runnable that will be called. This function/LCEL should accept a dictionary in the same form as the State object as input, and output a dictionary with keys of the State object to update.
+
+graph.add_node("model", model)
+graph.add_node("tools", tool_executor)
+There is also a special END node that is used to represent the end of the graph. It is important that your cycles be able to end eventually!
+
+from langgraph.graph import END
+Edges
+After adding nodes, you can then add edges to create the graph. There are a few types of edges.
+
+The Starting Edge
+This is the edge that connects the start of the graph to a particular node. This will make it so that that node is the first one called when input is passed to the graph. Pseudocode for that is
+
+graph.set_entry_point("model")
+Normal Edges
+These are edges where one node should ALWAYS be called after another. An example of this may be in the basic agent runtime, where we always want the model to be called after we call a tool.
+
+graph.add_edge("tools", "model")
+Conditional Edges
+These are where a function (often powered by an LLM) is used to determine which node to go to first. To create this edge, you need to pass in three things:
+
+The upstream node:
+The output of this node will be looked at to determine what to do next
+
+A function:
+Function will be called to determine which node to call next. It should return a string
+
+A mapping:
+Mapping will be used to map the output of the function to another node. The keys should be possible values that the function could return. The values should be names of nodes to go to if that value is returned.
+
+graph.add_conditional_edge(
+    "model",
+    should_continue,
+    {
+        "end": END,
+        "continue": "tools"
+    }
+)
+Compile
+After we define our graph, we can compile it into a runnable! This simply takes the graph definition we’ve created so far an returns a runnable. This runnable exposes all the same method as LangChain runnables (.invoke, .stream, .astream_log, etc) allowing it to be called in the same manner as a chain.
+
+app = graph.compile()
+Agent Executor
+We’ve recreated the canonical LangChain AgentExecutor with LangGraph. This will allow you to use existing LangChain agents, but allow you to more easily modify the internals of the AgentExecutor. The state of this graph by default contains concepts that should be familiar to you if you’ve used LangChain agents: input, chat_history, intermediate_steps (and agent_outcome to represent the most recent agent outcome)
+
+Chat Agent Executor
+One common trend we’ve seen is that more and more models are “chat” models which operate on a list of messages. This models are often the ones equipped with things like function calling, which make agent-like experiences much more feasible. When working with these types of models, it is often intuitive to represent the state of an agent as a list of messages.
+
+As such, we’ve created an agent runtime that works with this state. The input is a list of messages, and nodes just simply add to this list of messages over time.
+
+from typing import TypedDict, Annotated, Sequence
+import operator
+from langchain_core.messages import BaseMessage
+
+
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+Conclusion
+With LangGraph, the LangChain ecosystem takes a giant leap forward, providing a robust framework for harnessing the power of large language models through sophisticated agent-based applications. By bridging the gap between dynamic cyclical computations and LangChain’s proven ecosystem, LangGraph opens up a new frontier of possibilities for AI developers and researchers alike.
+
+As the world of AI continues to evolve at a breakneck pace, tools like LangGraph will be instrumental in translating the latest research into practical, scalable, and intelligent applications that can transform industries and solve complex real-world challenges.
+
+In the next article, we will walk through a practical example of using LangGraph to create a sophisticated agent for a real-world use case. We’ll cover all the steps involved, from designing the state object and identifying the required nodes, to connecting them with appropriate edges, and finally compiling and running the agent.
